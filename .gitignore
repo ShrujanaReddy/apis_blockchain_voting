@@ -1,0 +1,54 @@
+# created by virtualenv automatically
+# Bytecode files
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+envs/
+lr_model.joblib
+# IDE or editor-specific files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS-specific files
+.DS_Store           # macOS
+Thumbs.db            # Windows
+
+# Log files
+*.log
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Pytest cache
+.pytest_cache/
+
+# Coverage reports
+.coverage
+.coverage.*
+*.coveragerc
+
+# Flask specific
+instance/
+*.db
+
+# PyCharm specific
+.idea/
+
+# Other environment-specific files
+*.env
+.env/
+*.env.*             # Environment variable files (e.g., .env, .env.production)
