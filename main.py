@@ -1,11 +1,12 @@
 # app.py
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Float, ForeignKey, TIMESTAMP, text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Float, ForeignKey, TIMESTAMP, DateTime , text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Dict
+from datetime import datetime
 import sentiment
 import uuid
 
@@ -46,6 +47,7 @@ class Comment(Base):
     comment_id = Column(Integer, primary_key=True, autoincrement=True)
     candidate_id = Column(Integer, ForeignKey("candidates.user_id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
+    name = Column(String, nullable=False)
     comment = Column(String, nullable=False)
     sentiment = Column(String, nullable=False)
     sentiment_probability = Column(Float, nullable=False)
@@ -92,7 +94,21 @@ class CampaignResponse(BaseModel):
 class CommentRequest(BaseModel):
     candidate_id: int
     user_id: int
+    name: str
     comment: str
+
+class CommentResponse(BaseModel):
+    candidate_id: int
+    user_id: int
+    name: str
+    comment: str
+
+class CandidateWithCommentsResponse(BaseModel):
+    candidate_id: int
+    name: str
+    email: str
+    wallet_address: str
+    comments: List[CommentResponse]
 
 class SentimentRequest(BaseModel):
     comments: Dict[str, List[str]]
@@ -136,7 +152,7 @@ def register_user(user: UserRegister, db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    return {"message": "User registered successfully.", "user_id": new_user.user_id, "role":new_user.role}
+    return {"message": "User registered successfully.", "user_id": new_user.user_id, "name": new_user.name, "role":new_user.role}
 
 # Endpoint 2: Login
 @app.post("/api/users/login")
@@ -148,7 +164,7 @@ def register_user(user: UserLogin, db: Session = Depends(get_db)):
     # Verify password
     if existing_user.password != user.password:
         raise HTTPException(status_code=400, detail="Invalid email or password")
-    return {"message": "Login successful", "user_id": existing_user.user_id, "role": existing_user.role}
+    return {"message": "Login successful", "user_id": existing_user.user_id, "name": existing_user.name, "role": existing_user.role}
 
 
 # Endpoint 2: Approve User
@@ -201,6 +217,7 @@ def add_comment(comment_data: CommentRequest, db: Session = Depends(get_db)):
     new_comment = Comment(
         candidate_id=comment_data.candidate_id,
         user_id=comment_data.user_id,
+        name=comment_data.name,
         comment=comment_data.comment,
         sentiment=pred,
         sentiment_probability=prob
@@ -209,6 +226,35 @@ def add_comment(comment_data: CommentRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_comment)
     return {"message": "Comment added successfully."}
+
+@app.get("/api/comments", response_model=List[CandidateWithCommentsResponse])
+def get_all_comments(db: Session = Depends(get_db)):
+    # Fetch all candidates
+    candidates = db.query(User).filter(User.role == "candidate", User.is_approved == True).all()
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No candidates found")
+    response = []
+    for candidate in candidates:
+        candidate_comments = db.query(Comment).filter(Comment.candidate_id == candidate.user_id).all()
+        comments = [
+            CommentResponse(
+                candidate_id=comment.candidate_id,
+                user_id=comment.user_id,
+                name=comment.name,
+                comment=comment.comment
+            ) for comment in candidate_comments
+        ]
+        response.append(
+            CandidateWithCommentsResponse(
+                candidate_id=candidate.user_id,
+                name=candidate.name,
+                email=candidate.email,
+                wallet_address=candidate.wallet_address,
+                comments=comments
+            )
+        )
+
+    return response
 
 # Endpoint 4: Get All Campaigns
 @app.get("/api/candidates/campaigns", response_model=List[CampaignResponse])
