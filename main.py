@@ -1,9 +1,10 @@
 # app.py
+import math
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Float, ForeignKey, TIMESTAMP, DateTime , text
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, joinedload
 from pydantic import BaseModel, ConfigDict
 from typing import List, Dict
 from datetime import datetime
@@ -45,7 +46,7 @@ class Candidate(Base):
 class Comment(Base):
     __tablename__ = "comments"
     comment_id = Column(Integer, primary_key=True, autoincrement=True)
-    candidate_id = Column(Integer, ForeignKey("candidates.user_id"), nullable=False)
+    candidate_id = Column(Integer, ForeignKey("candidates.candidate_id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
     name = Column(String, nullable=False)
     comment = Column(String, nullable=False)
@@ -230,39 +231,60 @@ def add_comment(comment_data: CommentRequest, db: Session = Depends(get_db)):
 @app.get("/api/comments", response_model=List[CandidateWithCommentsResponse])
 def get_all_comments(db: Session = Depends(get_db)):
     # Fetch all candidates
-    candidates = db.query(User).filter(User.role == "candidate", User.is_approved == True).all()
-    if not candidates:
-        raise HTTPException(status_code=404, detail="No candidates found")
-    response = []
-    for candidate in candidates:
-        candidate_comments = db.query(Comment).filter(Comment.candidate_id == candidate.user_id).all()
-        comments = [
-            CommentResponse(
-                candidate_id=comment.candidate_id,
-                user_id=comment.user_id,
-                name=comment.name,
-                comment=comment.comment
-            ) for comment in candidate_comments
-        ]
-        response.append(
-            CandidateWithCommentsResponse(
-                candidate_id=candidate.user_id,
-                name=candidate.name,
-                email=candidate.email,
-                wallet_address=candidate.wallet_address,
-                comments=comments
+    query = db.query(
+        Candidate.candidate_id.label('candidate_id'),
+        User.name.label('user_name'),
+        User.email.label('user_email'),
+        User.wallet_address.label('user_wallet_address'),
+        Comment.comment_id.label('comment_id'),
+        Comment.user_id.label('comment_user_id'),
+        Comment.name.label('commenter_name'),
+        Comment.comment.label('comment_text')
+    ).join(User, User.user_id == Candidate.user_id)\
+    .outerjoin(Comment, Comment.candidate_id == Candidate.candidate_id)\
+    .filter(User.is_approved == True)\
+    .all()
+    
+    # Group the results by candidate_id
+    candidates_dict = {}
+    for row in query:
+        candidate_id = row.candidate_id
+        if candidate_id not in candidates_dict:
+            candidates_dict[candidate_id] = {
+                'candidate_id': candidate_id,
+                'name': row.user_name,
+                'email': row.user_email,
+                'wallet_address': row.user_wallet_address,
+                'comments': []
+            }
+        if row.comment_id is not None:
+            comment = CommentResponse(
+                candidate_id=candidate_id,
+                user_id=row.comment_user_id,
+                name=row.commenter_name,
+                comment=row.comment_text
             )
-        )
-
+            candidates_dict[candidate_id]['comments'].append(comment)
+    
+    # Create the final response
+    response = [CandidateWithCommentsResponse(**data) for data in candidates_dict.values()]
+    
     return response
 
 # Endpoint 4: Get All Campaigns
 @app.get("/api/candidates/campaigns", response_model=List[CampaignResponse])
 def get_campaigns(db: Session = Depends(get_db)):
-    # Fetch all approved candidates and their campaigns
-    campaigns = db.query(Candidate, User).filter(User.user_id == Candidate.user_id, User.is_approved == True).all()
+    # Fetch all approved candidates, mapping candidate_id to user_id first
+    campaigns = (
+        db.query(Candidate, User)
+        .join(User, User.user_id == Candidate.user_id)  # Link candidate's user_id to the Users table
+        .filter(User.is_approved == True)
+        .all()
+    )
+    
     response = []
     for candidate, user in campaigns:
+        # Prepare campaign data
         campaign_data = CandidateCampaign(
             age=candidate.age,
             gender=candidate.gender,
@@ -271,13 +293,16 @@ def get_campaigns(db: Session = Depends(get_db)):
             goals=candidate.goals,
             motive=candidate.motive,
             plan_of_action=candidate.plan_of_action,
-            slogan=candidate.slogan
+            slogan=candidate.slogan,
         )
+        
+        # Append response with the correct user name and candidate details
         response.append(CampaignResponse(
             candidate_id=candidate.candidate_id,
-            name=user.name,
-            campaign=campaign_data
+            name=user.name,  # Correctly fetched user name
+            campaign=campaign_data,
         ))
+    
     return response
 
 # Endpoint 7: Get All Candidates
@@ -344,26 +369,60 @@ def get_approved_candidates(db: Session = Depends(get_db)):
 def sentiment_analysis(db: Session = Depends(get_db)):
     candidates = db.query(Candidate).all()
     comments = db.query(Comment).all()
+    users = db.query(User).all()  # Fetch all users
 
+    # Create a mapping from user_id to name
+    user_id_to_name = {user.user_id: user.name for user in users}
+
+    candidate_scores = {}
     candidate_sentiments = {}
 
     for candidate in candidates:
         candidate_comments = [comment for comment in comments if comment.candidate_id == candidate.candidate_id]
 
-        if not candidate_comments:
-            candidate_sentiments[candidate.candidate_id] = {"sentiment": "neutral", "probability": 0.5}
+        positive_comments = [comment for comment in candidate_comments if comment.sentiment == 'positive']
+        negative_comments = [comment for comment in candidate_comments if comment.sentiment == 'negative']
+
+        positive_count = len(positive_comments)
+        negative_count = len(negative_comments)
+        total_comments = positive_count + negative_count
+
+        if total_comments == 0:
+            sentiment_score = 0.0
         else:
-            sentiment_scores = {}
-            total_probability = sum(comment.sentiment_probability for comment in candidate_comments)
+            sentiment_score = (positive_count - negative_count) / total_comments
 
-            for comment in candidate_comments:
-                sentiment = comment.sentiment
-                normalized_prob = comment.sentiment_probability / total_probability
-                if sentiment not in sentiment_scores:
-                    sentiment_scores[sentiment] = 0
-                sentiment_scores[sentiment] += normalized_prob
+        candidate_scores[candidate.candidate_id] = sentiment_score
 
-            majority_sentiment = max(sentiment_scores, key=sentiment_scores.get)
-            candidate_sentiments[candidate.candidate_id] = {"sentiment": majority_sentiment, "probability": round(sentiment_scores[majority_sentiment],3)}
+        # Determine sentiment label
+        if sentiment_score > 0:
+            sentiment = 'positive'
+        elif sentiment_score < 0:
+            sentiment = 'negative'
+        else:
+            sentiment = 'neutral'
 
-    return {"predictions": candidate_sentiments}
+        candidate_sentiments[candidate.candidate_id] = sentiment
+
+    # Calculate softmax probabilities
+    exp_scores = [math.exp(score) for score in candidate_scores.values()]
+    sum_exp = sum(exp_scores)
+    probabilities = {candidate_id: round(exp_score / sum_exp, 3) for candidate_id, exp_score in zip(candidate_scores.keys(), exp_scores)}
+
+    # Collect predictions in a list of dictionaries
+    predictions_list = []
+    for candidate in candidates:
+        candidate_id = candidate.candidate_id
+        user_id = candidate.user_id
+        candidate_name = user_id_to_name.get(user_id, "Unknown")  # Get name or "Unknown" if not found
+        sentiment = candidate_sentiments.get(candidate_id, "neutral")
+        probability = probabilities.get(candidate_id, 0.0)
+
+        predictions_list.append({
+            "candidate_id": candidate_id,
+            "name": candidate_name,
+            "sentiment": sentiment,
+            "probability": probability
+        })
+
+    return {"predictions": predictions_list}

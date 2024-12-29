@@ -27,7 +27,7 @@ def predict_sentiment(text):
     score = result['score']
 
     # Map the sentiment label to human-readable format
-    sentiment = 'Positive' if label == 'POSITIVE' else 'NEGATIVE'
+    sentiment = 'positive' if label == 'POSITIVE' else 'negative'
     
     # Return sentiment and probability rounded to 3 decimal places
     return sentiment, round(score, 3)
